@@ -465,7 +465,7 @@ def supervisor_main(opts):
 
     dash = Dashboard(opts.log)
     r, w = os.pipe()
-    mode = "strict" if opts.strict else "observe"
+    mode = "strict" if opts.strict else opts.mode
     cmd = build_command(opts.target, opts.args, w, opts.net, mode)
 
     dash.line(GRN, "START", f"detonating {opts.target} (timeout {opts.timeout}s, "
@@ -521,6 +521,8 @@ def main():
         usage="%(prog)s [options] target.py [-- script args...]")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--timeout", type=float, default=10.0)
+    ap.add_argument("--mode", choices=("observe", "strict"), default="observe",
+                    help="execution mode (default: observe)")
     ap.add_argument("--strict", action="store_true",
                 help="hook also kills dangerous actions. Without this flag the tool runs in "
                      "observe mode (default) : the jailed script keeps running and everything is logged")

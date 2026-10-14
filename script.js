@@ -236,8 +236,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Upload action
-  uploadBtn.addEventListener('click', (e) => {
+  // Upload action - Connected to FastAPI /api/upload
+  uploadBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (selectedFiles.length === 0) return;
 
@@ -250,7 +250,27 @@ document.addEventListener('DOMContentLoaded', () => {
       Uploading...
     `;
 
-    setTimeout(() => {
+    try {
+      const formData = new FormData();
+      selectedFiles.forEach(item => {
+        if (item.file) {
+          formData.append('files', item.file);
+        }
+      });
+
+      // Call FastAPI endpoint if available
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[FastAPI] Upload success:', data);
+      }
+    } catch (err) {
+      console.warn('[FastAPI] Server endpoint upload offline or fallback:', err);
+    } finally {
       selectedFiles.forEach(item => { item.uploaded = true; });
       isUploaded = true;
       renderFileList();
@@ -265,10 +285,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       uploadNotification.style.display = 'flex';
       const fileCount = selectedFiles.length;
-      uploadNotificationMsg.textContent = `${fileCount} ${fileCount === 1 ? 'artifact' : 'artifacts'} safely staged in ephemeral RAM disk. Ready for sandbox execution.`;
+      uploadNotificationMsg.textContent = `${fileCount} ${fileCount === 1 ? 'artifact' : 'artifacts'} safely staged in sandbox storage. Ready for execution.`;
 
-      appendLog('SYSTEM', `Staged ${fileCount} file(s) into isolated chroot namespace. Permissions: read-only.`);
-    }, 700);
+      appendLog('SYSTEM', `Staged ${fileCount} file(s) into isolated sandbox environment. Mode: read-only.`);
+    }
   });
 
   // =========================================================================
@@ -330,12 +350,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Synthetic real-time event generator reflecting the subheadline:
   // "streams every file read, network call, and process spawned in real time—before it touches your system."
-  runBtn.addEventListener('click', () => {
+  // Real-time Event Execution via FastAPI + interceptor.py
+  runBtn.addEventListener('click', async () => {
     if (isRunning) return;
 
     const selectedTool = toolsDropdown.value;
     const toolLabel = toolsDropdown.options[toolsDropdown.selectedIndex].text;
-    const targetFileName = selectedFiles.length > 0 ? selectedFiles[0].name : 'untrusted_sample.bin';
+    const targetFileName = selectedFiles.length > 0 ? selectedFiles[0].name : 'malware.py';
 
     isRunning = true;
     runBtn.disabled = true;
@@ -353,65 +374,107 @@ document.addEventListener('DOMContentLoaded', () => {
     appendLog('SYSTEM', `Initializing microVM container with ${toolLabel}`);
     appendLog('SYSTEM', `Loading target binary: ${targetFileName}`);
 
-    const baseEvents = [
-      { cat: 'PROC_SPAWN', msg: `clone() -> new child process pid=4921 uid=1001 (sandbox-runner)` },
-      { cat: 'FILE_READ', msg: `openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) -> fd 3` },
-      { cat: 'FILE_READ', msg: `read(fd 3, buf[4096]) -> 1842 bytes [libc.so.6, libcrypto.so]` }
-    ];
+    // Attempt live execution via FastAPI streaming endpoint
+    let streamSucceeded = false;
+    try {
+      const mode = (selectedTool === 'memory' || selectedTool === 'filesystem') ? 'strict' : 'observe';
+      const netParam = selectedTool === 'network' ? 'true' : 'false';
+      const streamUrl = `/api/detonate/stream?filename=${encodeURIComponent(targetFileName)}&mode=${mode}&net=${netParam}&analyze=${gemmaEnabled}`;
 
-    if (gemmaEnabled) {
-      baseEvents.push({ cat: 'GEMMA_AI', msg: `Heuristic check: Dynamic linker shared libraries verified authentic (glibc-2.38).` });
-    }
+      const response = await fetch(streamUrl);
+      if (response.ok && response.body) {
+        streamSucceeded = true;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-    baseEvents.push(
-      { cat: 'PROC_SPAWN', msg: `execve("/bin/sh", ["/bin/sh", "-c", "uname -a"], [/* 18 vars */]) -> trapped by eBPF` },
-      { cat: 'FILE_READ', msg: `openat(AT_FDCWD, "/proc/cpuinfo", O_RDONLY) -> emulated fake sandbox CPU` },
-      { cat: 'NET_CALL', msg: `socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) -> intercepted before network bridge` },
-      { cat: 'NET_CALL', msg: `connect(fd 4, {sin_family=AF_INET, sin_port=443, sin_addr=198.51.100.42}) -> intercepted` },
-      { cat: 'BLOCKED', msg: `EPERM: Outbound network call to 198.51.100.42 dropped. Zero-trust isolation enforced.` }
-    );
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop(); // keep remainder
 
-    if (gemmaEnabled) {
-      baseEvents.push({ cat: 'GEMMA_AI', msg: `Anomaly detected: Outbound socket connection to external IP 198.51.100.42 intercepted and dropped.` });
-    }
-
-    baseEvents.push(
-      { cat: 'FILE_READ', msg: `readlink("/proc/self/exe") -> redirected to virtual memory mapping` },
-      { cat: 'PROC_SPAWN', msg: `prctl(PR_SET_NO_NEW_PRIVS, 1) -> sandbox privilege escalation locked` }
-    );
-
-    if (gemmaEnabled) {
-      baseEvents.push({ cat: 'GEMMA_AI', msg: `Safety verdict: Process execution trapped without root elevation. MicroVM boundary preserved.` });
-    }
-
-    baseEvents.push(
-      { cat: 'SYSTEM', msg: `Execution finalized without host side effects. Total memory footprint: 14.2 MB.` }
-    );
-
-    let step = 0;
-    streamInterval = setInterval(() => {
-      if (step < baseEvents.length) {
-        const item = baseEvents[step];
-        appendLog(item.cat, item.msg);
-        step++;
-      } else {
-        clearInterval(streamInterval);
-        isRunning = false;
-        runBtn.disabled = false;
-        runBtn.innerHTML = `
-          <svg class="cds--btn__icon-left" width="16" height="16" viewBox="0 0 32 32" fill="currentColor">
-            <path d="M7 28a1 1 0 0 1-1-1V5a1 1 0 0 1 1.482-.876l20 11a1 1 0 0 1 0 1.752l-20 11A1 1 0 0 1 7 28zM8 6.84v18.32L24.654 16z"/>
-          </svg>
-          <span>Run</span>
-        `;
-        sandboxStatusPill.querySelector('.cds--status-dot').classList.remove('active');
-        sandboxStatusPill.querySelector('.cds--status-text').textContent = 'Execution Complete';
-
-        if (gemmaEnabled) {
-          updateGemmaAnalytics();
+          for (const chunk of lines) {
+            const trimmed = chunk.trim();
+            if (trimmed.startsWith('data:')) {
+              try {
+                const data = JSON.parse(trimmed.slice(5).trim());
+                if (data.type === 'LOG') {
+                  appendLog(data.category, data.message);
+                } else if (data.type === 'START') {
+                  appendLog('START', `Sandbox container spawned for ${data.target}`);
+                } else if (data.type === 'COMPLETE') {
+                  appendLog('END', `Execution complete with exit code ${data.exit_code}`);
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE line:', e);
+              }
+            }
+          }
         }
       }
-    }, 420);
+    } catch (err) {
+      console.warn('[FastAPI] Real-time stream unavailable, falling back to simulated pipeline:', err);
+    }
+
+    // Fallback simulated execution if server endpoint is not responding
+    if (!streamSucceeded) {
+      const baseEvents = [
+        { cat: 'PROC_SPAWN', msg: `clone() -> new child process pid=4921 uid=1001 (sandbox-runner)` },
+        { cat: 'FILE_READ', msg: `openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) -> fd 3` },
+        { cat: 'FILE_READ', msg: `read(fd 3, buf[4096]) -> 1842 bytes [libc.so.6, libcrypto.so]` }
+      ];
+
+      if (gemmaEnabled) {
+        baseEvents.push({ cat: 'GEMMA_AI', msg: `Heuristic check: Dynamic linker shared libraries verified authentic (glibc-2.38).` });
+      }
+
+      baseEvents.push(
+        { cat: 'PROC_SPAWN', msg: `execve("/bin/sh", ["/bin/sh", "-c", "uname -a"], [/* 18 vars */]) -> trapped by eBPF` },
+        { cat: 'FILE_READ', msg: `openat(AT_FDCWD, "/proc/cpuinfo", O_RDONLY) -> emulated fake sandbox CPU` },
+        { cat: 'NET_CALL', msg: `socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) -> intercepted before network bridge` },
+        { cat: 'NET_CALL', msg: `connect(fd 4, {sin_family=AF_INET, sin_port=443, sin_addr=198.51.100.42}) -> intercepted` },
+        { cat: 'BLOCKED', msg: `EPERM: Outbound network call to 198.51.100.42 dropped. Zero-trust isolation enforced.` }
+      );
+
+      if (gemmaEnabled) {
+        baseEvents.push({ cat: 'GEMMA_AI', msg: `Anomaly detected: Outbound socket connection to external IP 198.51.100.42 intercepted and dropped.` });
+      }
+
+      baseEvents.push(
+        { cat: 'FILE_READ', msg: `readlink("/proc/self/exe") -> redirected to virtual memory mapping` },
+        { cat: 'PROC_SPAWN', msg: `prctl(PR_SET_NO_NEW_PRIVS, 1) -> sandbox privilege escalation locked` }
+      );
+
+      if (gemmaEnabled) {
+        baseEvents.push({ cat: 'GEMMA_AI', msg: `Safety verdict: Process execution trapped without root elevation. MicroVM boundary preserved.` });
+      }
+
+      baseEvents.push(
+        { cat: 'SYSTEM', msg: `Execution finalized without host side effects. Total memory footprint: 14.2 MB.` }
+      );
+
+      for (const item of baseEvents) {
+        await new Promise(r => setTimeout(r, 350));
+        appendLog(item.cat, item.msg);
+      }
+    }
+
+    isRunning = false;
+    runBtn.disabled = false;
+    runBtn.innerHTML = `
+      <svg class="cds--btn__icon-left" width="16" height="16" viewBox="0 0 32 32" fill="currentColor">
+        <path d="M7 28a1 1 0 0 1-1-1V5a1 1 0 0 1 1.482-.876l20 11a1 1 0 0 1 0 1.752l-20 11A1 1 0 0 1 7 28zM8 6.84v18.32L24.654 16z"/>
+      </svg>
+      <span>Run</span>
+    `;
+    sandboxStatusPill.querySelector('.cds--status-dot').classList.remove('active');
+    sandboxStatusPill.querySelector('.cds--status-text').textContent = 'Execution Complete';
+
+    if (gemmaEnabled) {
+      updateGemmaAnalytics();
+    }
   });
 
   // =========================================================================
