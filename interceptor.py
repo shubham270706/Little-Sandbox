@@ -36,6 +36,7 @@ SELF = os.path.realpath(__file__)
 
 
 # Shared policy tables (used by the child's audit hook)
+
 BLOCK_EVENTS = {
     "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork",
     "os.forkpty", "subprocess.Popen", "pty.spawn", "ctypes.dlopen",
@@ -70,6 +71,7 @@ EXIT_BLOCKED = 97
 
 
 # CHILD (runs inside the jail)
+
 def child_main(target, target_args):
     import json as _json          # import everything BEFORE arming the hook
     import resource
@@ -173,6 +175,7 @@ def child_main(target, target_args):
 
 
 # SUPERVISOR (runs outside the jail)
+
 def clean(s, limit=400):
     """Neutralise terminal escape sequences coming from untrusted output."""
     s = s[:limit]
@@ -297,7 +300,9 @@ def build_command(target, target_args, event_fd, net, mode="observe"):
     return cmd
 
 
+
 # AI ANALYST (Gemma via Google's Gemini API) - advisory only, can only escalate
+
 GEMMA_MODEL = os.environ.get("ATI_MODEL", "gemma-4-26b-a4b-it")
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 LEVELS = {"BENIGN": 0, "SUSPICIOUS": 1, "BLOCKED": 2}
@@ -460,10 +465,11 @@ def supervisor_main(opts):
 
     dash = Dashboard(opts.log)
     r, w = os.pipe()
-    cmd = build_command(opts.target, opts.args, w, opts.net, opts.mode)
+    mode = "strict" if opts.strict else "observe"
+    cmd = build_command(opts.target, opts.args, w, opts.net, mode)
 
     dash.line(GRN, "START", f"detonating {opts.target} (timeout {opts.timeout}s, "
-                             f"network {'ON' if opts.net else 'OFF'}, mode {opts.mode})")
+                             f"network {'ON' if opts.net else 'OFF'}, mode {mode})")
     proc = subprocess.Popen(
         cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         pass_fds=(w,), start_new_session=True,
@@ -515,9 +521,9 @@ def main():
         usage="%(prog)s [options] target.py [-- script args...]")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--timeout", type=float, default=10.0)
-    ap.add_argument("--mode", choices=["observe", "strict"], default="observe",
-                    help="observe: let the jailed script keep running and log it (default); "
-                         "strict: hook also kills dangerous actions")
+    ap.add_argument("--strict", action="store_true",
+                help="hook also kills dangerous actions. Without this flag the tool runs in "
+                     "observe mode (default) : the jailed script keeps running and everything is logged")
     ap.add_argument("--net", action="store_true", help="share host network (NOT recommended)")
     ap.add_argument("--log", help="write events as JSONL")
     ap.add_argument("--analyze", action="store_true",
