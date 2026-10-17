@@ -189,7 +189,7 @@ Issues and PRs are welcome. If you find a way for a script to get out of the jai
 
 ## License
 
-[LICENSE](LINCENSE)
+[LICENSE](LICENSE)
 
 ## Acknowledgements
 
